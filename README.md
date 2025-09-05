@@ -1,4 +1,4 @@
-# Django Authentication API
+# Authentication Project
 
 This project provides user authentication (Register, Login, Logout, and Profile `/me/`) using Django Rest Framework with CSRF + cookie-based sessions.
 
@@ -6,7 +6,7 @@ This project provides user authentication (Register, Login, Logout, and Profile 
 
 ## 🚀 Setup Instructions
 
-### 1. Clone or copy the projec
+### 1. Clone or copy the project
 Place the project in your desired folder (e.g. `C:\Users\USER\Desktop\pythonProj`).
 
 ### 2. Create and activate virtual environment
