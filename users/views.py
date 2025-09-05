@@ -1,137 +1,118 @@
-# users/views.py
+from django.contrib.auth import authenticate, login, logout, get_user_model
+from django.http import JsonResponse
+from django.views.decorators.csrf import ensure_csrf_cookie, csrf_exempt
+from django.views import View
+from django.utils.decorators import method_decorator
+from django.contrib.auth.decorators import login_required
+
 import random
-from datetime import timedelta
-from django.conf import settings
-from django.contrib.auth import authenticate, get_user_model
-from django.views.decorators.csrf import ensure_csrf_cookie
-from django.middleware.csrf import get_token
-
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
-from rest_framework import status
-
-from drf_yasg.utils import swagger_auto_schema
-from .serializers import (
-    UserSerializer, RegisterSerializer, VerifyOTPSerializer, LoginSerializer
-)
-from .models import EmailOTP, AuthToken
-from django.utils import timezone
-from django.core.mail import send_mail
 
 User = get_user_model()
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
+# In-memory OTP store (use cache/DB in production)
+otp_store = {}
+
+# ---------------- CSRF ----------------
 @ensure_csrf_cookie
-def csrf(request):
-    """
-    Call this endpoint (or open Swagger) to ensure csrftoken cookie is set.
-    """
-    return Response({'csrfToken': get_token(request)})
+def get_csrf(request):
+    return JsonResponse({"detail": "CSRF cookie set"})
 
-@swagger_auto_schema(method='post', request_body=RegisterSerializer, security=[{'X-CSRFToken': []}])
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def register(request):
-    s = RegisterSerializer(data=request.data)
-    s.is_valid(raise_exception=True)
-    email = s.validated_data['email'].lower()
-    password = s.validated_data['password']
 
-    user, created = User.objects.get_or_create(username=email, defaults={'email': email, 'is_active': False})
-    if not created and user.is_active:
-        return Response({'detail': 'User already exists and is active.'}, status=400)
+# ---------------- Register ----------------
+@method_decorator(csrf_exempt, name="dispatch")
+class RegisterView(View):
+    def post(self, request):
+        import json
 
-    if created:
-        user.set_password(password)
-        user.is_active = False
-        user.save()
+        try:
+            data = json.loads(request.body)
+            email = data.get("email")
+            password = data.get("password")
 
-    code = f'{random.randint(0, 999999):06d}'
-    EmailOTP.objects.create(email=email, code=code)
+            if not email or not password:
+                return JsonResponse({"detail": "Email and password required."}, status=400)
 
-    send_mail(
-        subject='Your verification code',
-        message=f'Your OTP is {code}. It expires in 10 minutes.',
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[email],
-        fail_silently=True,
-    )
-    return Response({'detail': 'OTP sent to email. Use /api/register/verify to activate.'}, status=201)
+            if User.objects.filter(email=email).exists():
+                return JsonResponse({"detail": "Email already registered."}, status=400)
 
-@swagger_auto_schema(method='post', request_body=VerifyOTPSerializer, security=[{'X-CSRFToken': []}])
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def verify_registration(request):
-    s = VerifyOTPSerializer(data=request.data)
-    s.is_valid(raise_exception=True)
-    email = s.validated_data['email'].lower()
-    code = s.validated_data['code']
+            # Generate OTP
+            otp = str(random.randint(100000, 999999))
+            otp_store[email] = {"otp": otp, "password": password}
 
-    try:
-        otp = EmailOTP.objects.filter(email=email, is_used=False).latest('created')
-    except EmailOTP.DoesNotExist:
-        return Response({'detail': 'No OTP found. Please register again.'}, status=400)
+            print(f"📩 OTP for {email}: {otp}")  # Simulating email sending
+            return JsonResponse({"detail": "OTP sent to email (check console)."})
+        except Exception as e:
+            return JsonResponse({"detail": str(e)}, status=400)
 
-    if otp.is_used or otp.is_expired() or otp.code != code:
-        return Response({'detail': 'Invalid or expired OTP.'}, status=400)
 
-    otp.is_used = True
-    otp.save()
+# ---------------- Verify Registration ----------------
+@method_decorator(csrf_exempt, name="dispatch")
+class VerifyRegisterView(View):
+    def post(self, request):
+        import json
 
-    try:
-        user = User.objects.get(username=email)
-    except User.DoesNotExist:
-        return Response({'detail': 'User not found.'}, status=404)
+        try:
+            data = json.loads(request.body)
+            email = data.get("email")
+            otp = data.get("otp")
 
-    user.is_active = True
-    user.save()
-    return Response({'detail': 'Registration verified. You can now log in.'}, status=200)
+            if not email or not otp:
+                return JsonResponse({"detail": "Email and OTP required."}, status=400)
 
-@swagger_auto_schema(method='post', request_body=LoginSerializer, security=[{'X-CSRFToken': []}])
-@api_view(['POST'])
-@permission_classes([AllowAny])
-def login(request):
-    s = LoginSerializer(data=request.data)
-    s.is_valid(raise_exception=True)
-    email = s.validated_data['email'].lower()
-    password = s.validated_data['password']
+            if email not in otp_store:
+                return JsonResponse({"detail": "No pending registration for this email."}, status=400)
 
-    user = authenticate(request, username=email, password=password)
-    if not user:
-        return Response({'detail': 'Invalid credentials.'}, status=status.HTTP_401_UNAUTHORIZED)
-    if not user.is_active:
-        return Response({'detail': 'Account not verified.'}, status=403)
+            if otp_store[email]["otp"] != otp:
+                return JsonResponse({"detail": "Invalid OTP."}, status=400)
 
-    token = AuthToken.objects.create(
-        user=user,
-        key=AuthToken.generate(),
-        expires_at=timezone.now() + timedelta(days=1)
-    )
+            # Create user
+            password = otp_store[email]["password"]
+            user = User.objects.create_user(username=email, email=email, password=password)
+            del otp_store[email]
 
-    resp = Response({'detail': 'Logged in.', 'expires_at': token.expires_at})
-    resp.set_cookie(
-        key='auth_token',
-        value=token.key,
-        httponly=True,
-        secure=not settings.DEBUG,
-        samesite='Lax',
-        max_age=24 * 60 * 60,
-        path='/'
-    )
-    return resp
+            return JsonResponse({"detail": "Registration successful."})
+        except Exception as e:
+            return JsonResponse({"detail": str(e)}, status=400)
 
-@api_view(['GET'])
+
+# ---------------- Login ----------------
+@method_decorator(csrf_exempt, name="dispatch")
+class LoginView(View):
+    def post(self, request):
+        import json
+
+        try:
+            data = json.loads(request.body)
+            email = data.get("email")
+            password = data.get("password")
+
+            if not email or not password:
+                return JsonResponse({"detail": "Email and password required."}, status=400)
+
+            user = authenticate(request, username=email, password=password)
+            if user is None:
+                return JsonResponse({"detail": "Invalid credentials."}, status=400)
+
+            login(request, user)
+            return JsonResponse({"detail": "Login successful."})
+        except Exception as e:
+            return JsonResponse({"detail": str(e)}, status=400)
+
+
+# ---------------- Logout ----------------
+@method_decorator(csrf_exempt, name="dispatch")
+class LogoutView(View):
+    def post(self, request):
+        logout(request)
+        return JsonResponse({"detail": "Logged out."})
+
+
+# ---------------- Me (protected) ----------------
+@login_required
 def me(request):
-    return Response(UserSerializer(request.user).data)
-
-@swagger_auto_schema(method='post', security=[{'X-CSRFToken': []}])
-@api_view(['POST'])
-def logout(request):
-    token_key = request.COOKIES.get('auth_token')
-    if token_key:
-        AuthToken.objects.filter(key=token_key).delete()
-    resp = Response({'detail': 'Logged out.'})
-    resp.delete_cookie('auth_token', path='/')
-    return resp
+    user = request.user
+    return JsonResponse({
+        "id": user.id,
+        "email": user.email,
+        "username": user.username,
+    })

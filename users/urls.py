@@ -1,12 +1,11 @@
-# users/urls.py
 from django.urls import path
 from . import views
 
 urlpatterns = [
-    path('csrf/', views.csrf, name='csrf'),
-    path('register/', views.register, name='register'),
-    path('register/verify/', views.verify_registration, name='verify'),
-    path('login/', views.login, name='login'),
-    path('me/', views.me, name='me'),
-    path('logout/', views.logout, name='logout'),
+    path("csrf/", views.get_csrf, name="csrf"),
+    path("register/", views.RegisterView.as_view(), name="register"),
+    path("register/verify/", views.VerifyRegisterView.as_view(), name="verify-register"),
+    path("login/", views.LoginView.as_view(), name="login"),
+    path("logout/", views.LogoutView.as_view(), name="logout"),
+    path("me/", views.me, name="me"),
 ]
