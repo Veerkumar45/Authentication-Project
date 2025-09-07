@@ -12,6 +12,7 @@ Place the project in your desired folder (e.g. `C:\Users\USER\Desktop\pythonProj
 ### 2. Create and activate virtual environment
 cmd
 python -m venv venv
+
 venv\Scripts\activate
 
 3. Install dependencies
